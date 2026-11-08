@@ -8,9 +8,9 @@ the bots they don't want to hear (right-click bot -> Mute).
 
 All bots share one clock, so every number starts at the same instant.
 
-Usage:
-    python bots.py                # uses config.json
-    python bots.py other.json
+Usage (Python 3.9 - run ./setup.sh or setup.bat once first):
+    .venv/bin/python bots.py                # uses config.json
+    .venv/bin/python bots.py other.json
 
 Chat commands (the FIRST bot in config.json listens for these):
     !countdown 10          -> 10 ... 1
@@ -19,6 +19,7 @@ Chat commands (the FIRST bot in config.json listens for these):
     !countdown stop        -> stop the running countdown (also: !stop)
 """
 
+from __future__ import annotations  # allows "X | None" hints on Python 3.9
 import asyncio
 import json
 import logging
@@ -26,6 +27,13 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+
+if sys.version_info[:2] != (3, 9):
+    sys.exit(
+        f"This bot is pinned to Python 3.9 (you are running {sys.version.split()[0]}).\n"
+        "Run ./setup.sh (macOS/Linux) or setup.bat (Windows) to create a 3.9 venv, then:\n"
+        "  .venv/bin/python bots.py     (Windows: .venv\\Scripts\\python bots.py)"
+    )
 
 import discord
 from gtts import gTTS

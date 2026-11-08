@@ -30,23 +30,36 @@ this single script, which is what keeps them in sync.
 
 ### B. Install and configure
 
-Requires Python 3.10+, **ffmpeg**, and **libopus** (Discord's voice codec).
+Requires **Python 3.9** (pinned; see `.python-version`), **ffmpeg**, and
+**libopus** (Discord's voice codec).
 
 ```bash
-# macOS:   brew install ffmpeg opus
-# Debian:  sudo apt install ffmpeg libopus0
+# macOS:   brew install ffmpeg opus python@3.9
+# Debian:  sudo apt install ffmpeg libopus0 python3.9 python3.9-venv
 # Windows: winget install ffmpeg      (opus comes bundled with discord.py[voice])
-pip install -r requirements.txt
-cp config.example.json config.json      # Windows: copy config.example.json config.json
+#          Python 3.9: https://www.python.org/downloads/release/python-3913/
 ```
+
+Then run the setup script once. It finds Python 3.9, creates a `.venv`,
+installs the requirements, and copies `config.example.json` to `config.json`:
+
+```bash
+./setup.sh          # macOS / Linux
+setup.bat           # Windows
+```
+
+(If you use pyenv or uv, they read `.python-version` and pick 3.9 for you.)
 
 Edit `config.json` and paste the three tokens.
 
 ### C. Run
 
 ```bash
-python bots.py
+.venv/bin/python bots.py            # Windows: .venv\Scripts\python bots.py
 ```
+
+The script refuses to start on any Python other than 3.9, so if you see a
+version error, re-run the setup script.
 
 You should see three "logged in as …" lines. Then, while in a voice channel,
 type in any text channel:
