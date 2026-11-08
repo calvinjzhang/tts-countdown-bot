@@ -1,0 +1,14 @@
+{
+  "prefix": "!countdown",
+  "stop_prefix": "!stop",
+  "interval_seconds": 1.0,
+  "lead_in_seconds": 2.0,
+  "max_steps": 60,
+  "trim_leading_silence": true,
+
+  "bots": [
+    { "name": "English",  "token": "paste-token-here",  "tts_lang": "en" },
+    { "name": "Chinese",  "token": "paste-token-here",  "tts_lang": "zh" },
+    { "name": "Japanese", "token": "paste-token-here", "tts_lang": "ja" }
+  ]
+}

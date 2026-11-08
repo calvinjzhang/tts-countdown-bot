@@ -1,0 +1,5 @@
+discord.py[voice]>=2.7
+# davey 0.2.x + discord.py 2.7.x = bot shows as speaking but sends audio clients can't decrypt (silence).
+# Pin until discord.py supports the davey 0.2 API.
+davey>=0.1.5,<0.2
+gTTS>=2.5
