@@ -1,7 +1,7 @@
 # Synchronized Multi-Language Countdown Bots
 
 Three Discord bots (English / Chinese / Japanese) run from **one program**.
-When someone in a voice channel types `!countdown 10`, all three bots join
+When someone in a voice channel types `!cd 10`, all three bots join
 **that same voice channel** and count down together, each in its language.
 Everyone mutes the two bots they don't want to hear. Because the bots share
 one clock, every number starts at the same instant.
@@ -64,14 +64,34 @@ version error, re-run the setup script.
 You should see three "logged in as …" lines. Then, while in a voice channel,
 type in any text channel:
 
-| You type             | Result                                              |
-|----------------------|-----------------------------------------------------|
-| `!countdown 10`      | all 3 bots join your channel and count 10 → 1       |
-| `!countdown 20 to 5` | 20 → 5                                              |
-| `!stop`              | stop a running countdown (also `!countdown stop`)   |
+| You type      | Result                                          |
+|---------------|-------------------------------------------------|
+| `!cd 10`      | all 3 bots join your channel and count 10 → 1   |
+| `!cd 20 to 5` | 20 → 5                                          |
+| `!stop`       | stop a running countdown (also `!cd stop`)      |
+| `!cd buttons` | post the panel of one-click buttons (see below) |
+
+Only **one countdown runs at a time**. To start a different one, stop the
+current one first. A countdown can last at most 600 seconds (`max_seconds`).
 
 The bots leave when the countdown ends. Keep the terminal open; the bots only
 run while the script does.
+
+#### Buttons
+
+The bot posts a panel with **CD 10**, then buttons for the **three most
+recently used countdowns** (newest first - e.g. after `!cd 45` it shows
+**CD 45**), and **Stop**. Anyone in a voice channel can click one
+to start that countdown in their channel - no typing.
+
+The panel is re-posted as the newest message (and the old copy removed) every
+time a button is clicked or any `!cd` / `!stop` command is used, so it never
+gets buried by chat. Buttons on an old panel keep working after a restart.
+
+Change the fixed buttons with `"buttons"` in `config.json`, e.g.
+`"buttons": [10, 30, "20 to 5"]`, and how many recent ones are shown with
+`"recent_buttons"`. A countdown counts as "used" when it is typed or its button
+is clicked. The recent list is saved in `recent.json`, so it survives restarts.
 
 ### D. Tell your users: mute the other two
 
@@ -87,7 +107,7 @@ mutes the English and Chinese bots and only hears Japanese.
 | `stop_prefix`          | command that stops a running countdown (default `!stop`)  |
 | `interval_seconds`     | gap between numbers                                       |
 | `lead_in_seconds`      | pause after all bots connect before the first number      |
-| `max_steps`            | safety cap on countdown length                            |
+| `max_seconds`          | longest countdown allowed, in seconds (default 600)       |
 | `trim_leading_silence` | cut silence from the start of each TTS clip (keeps languages aligned) |
 | `opus_path`            | leave empty normally; full path to libopus if it isn't auto-found |
 | `bots[].tts_lang`      | Google TTS code: `en`, `zh` (Mandarin), `zh-TW`, `ja`, `ko`, `es`, … |
