@@ -29,6 +29,7 @@ message. Only one countdown runs at a time; stop it before starting another.
 from __future__ import annotations  # allows "X | None" hints on Python 3.9
 import asyncio
 import audioop
+import collections
 import json
 import logging
 import re
@@ -70,6 +71,8 @@ MAX_SECONDS: float = float(CONFIG.get("max_seconds", 600))   # longest countdown
 TRIM_SILENCE: bool = bool(CONFIG.get("trim_leading_silence", True))
 SPEECH_RATE: float = float(CONFIG.get("speech_rate", 1.2))   # 1.2 = each number spoken 20% faster; the beat is unchanged
 ZH_SHORT: bool = bool(CONFIG.get("zh_short_numbers", True))  # Chinese: 44 -> 四四 instead of 四十四
+
+TRACK_CACHE: int = int(CONFIG.get("track_cache_size", 10))   # finished countdown tracks kept in memory (0 = off)
 
 OPUS_PATH: str = CONFIG.get("opus_path", "")
 
@@ -377,6 +380,8 @@ class Hub:
         self.recent: list[tuple[int, int]] = self._load_recent()   # recently used countdowns, newest first
         self.panels: dict[int, discord.Message] = {}     # text channel id -> newest button panel
         self.panel_locks: dict[int, asyncio.Lock] = {}
+        # (start, end) -> one finished track per bot, least recently used first. Tracks are only ever read.
+        self.tracks: collections.OrderedDict[tuple[int, int], list[bytearray]] = collections.OrderedDict()
         bots[0].client.event(self.on_message)
         bots[0].client.event(self.on_interaction)
 
@@ -540,8 +545,18 @@ class Hub:
 
     async def run(self, channel_id: int, start: int, end: int) -> None:
         # 1. Build each language's whole countdown as one track (TTS + decoding happen here, not during the count).
-        sem = asyncio.Semaphore(8)                       # ffmpeg decodes running at once
-        tracks = await asyncio.gather(*(b.prepare_track(start, end, sem) for b in self.bots))
+        #    The last TRACK_CACHE countdowns are kept in memory, so a repeat skips straight to step 2.
+        key = (start, end)
+        tracks = self.tracks.get(key)
+        if tracks is None:
+            sem = asyncio.Semaphore(8)                   # ffmpeg decodes running at once
+            tracks = await asyncio.gather(*(b.prepare_track(start, end, sem) for b in self.bots))
+            if TRACK_CACHE > 0:
+                self.tracks[key] = tracks
+                while len(self.tracks) > TRACK_CACHE:
+                    self.tracks.popitem(last=False)      # drop the least recently used
+        else:
+            self.tracks.move_to_end(key)
         # 2. Every bot joins the channel (or moves there, or is already in it); wait until ALL are connected.
         vcs = await asyncio.gather(*(b.connect(channel_id) for b in self.bots))
         # 3. One shared start instant on the process-wide monotonic clock.

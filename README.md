@@ -112,6 +112,7 @@ mutes the English and Chinese bots and only hears Japanese.
 | `trim_leading_silence` | cut silence from the start of each TTS clip (keeps languages aligned) |
 | `speech_rate`          | how fast each number is spoken (default `1.2` = 20% faster; `1` = normal). The gap between numbers is unchanged |
 | `zh_short_numbers`     | Chinese reads digits above 20: 44 → 四四 instead of 四十四 (default `true`) |
+| `track_cache_size`     | how many recent countdowns keep their finished audio in memory so repeats start without rebuilding (default `10`; `0` = off) |
 | `opus_path`            | leave empty normally; full path to libopus if it isn't auto-found |
 | `bots[].tts_lang`      | Google TTS code: `en`, `zh` (Mandarin), `zh-TW`, `ja`, `ko`, `es`, … |
 

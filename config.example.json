@@ -9,6 +9,7 @@
   "zh_short_numbers": true,
   "buttons": [10],
   "recent_buttons": 3,
+  "track_cache_size": 10,
 
   "bots": [
     { "name": "English",  "token": "paste-token-here",  "tts_lang": "en" },
