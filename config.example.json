@@ -5,6 +5,8 @@
   "lead_in_seconds": 2.0,
   "max_seconds": 600,
   "trim_leading_silence": true,
+  "speech_rate": 1.2,
+  "zh_short_numbers": true,
   "buttons": [10],
   "recent_buttons": 3,
 

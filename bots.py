@@ -28,6 +28,7 @@ message. Only one countdown runs at a time; stop it before starting another.
 
 from __future__ import annotations  # allows "X | None" hints on Python 3.9
 import asyncio
+import audioop
 import json
 import logging
 import re
@@ -67,6 +68,8 @@ INTERVAL: float = float(CONFIG.get("interval_seconds", 1.0))
 LEAD_IN: float = float(CONFIG.get("lead_in_seconds", 2.0))
 MAX_SECONDS: float = float(CONFIG.get("max_seconds", 600))   # longest countdown allowed
 TRIM_SILENCE: bool = bool(CONFIG.get("trim_leading_silence", True))
+SPEECH_RATE: float = float(CONFIG.get("speech_rate", 1.2))   # 1.2 = each number spoken 20% faster; the beat is unchanged
+ZH_SHORT: bool = bool(CONFIG.get("zh_short_numbers", True))  # Chinese: 44 -> 四四 instead of 四十四
 
 OPUS_PATH: str = CONFIG.get("opus_path", "")
 
@@ -181,6 +184,20 @@ def build_panel(recent: list[tuple[int, int]] = ()) -> discord.ui.View:
     return view
 
 
+ZH_DIGITS = "零一二三四五六七八九"
+
+
+def spoken(n: int, lang: str) -> str:
+    """The text handed to TTS for number `n`.
+
+    Chinese drops the 十/百 and reads the digits (44 -> 四四, 123 -> 一二三) so every number
+    stays short. 1-19 and round numbers (40, 100) are already short and keep their normal reading.
+    """
+    if ZH_SHORT and lang.lower().startswith("zh") and n > 20 and n % (10 if n < 100 else 100):
+        return "".join(ZH_DIGITS[int(d)] for d in str(n))
+    return str(n)
+
+
 class UserError(Exception):
     """A request we refuse, with a message meant for the person who asked."""
 
@@ -214,6 +231,58 @@ async def ensure_clip(text: str, lang: str) -> Path:
     if not path.exists():
         await asyncio.to_thread(_make_clip, text, lang, path)
     return path
+
+
+PCM_RATE = 48000                 # Discord's sample rate
+FRAME_BYTES = PCM_RATE // 50 * 2 # one 20 ms frame of 16-bit mono
+
+
+async def decode_clip(path: Path, sem: asyncio.Semaphore) -> bytes:
+    """Decode a cached clip to raw 16-bit mono PCM at 48 kHz, with the speech rate applied."""
+    cmd = ["ffmpeg", "-loglevel", "error", "-i", str(path)]
+    if SPEECH_RATE != 1:
+        cmd += ["-filter:a", f"atempo={SPEECH_RATE:g}"]
+    cmd += ["-f", "s16le", "-ar", str(PCM_RATE), "-ac", "1", "pipe:1"]
+    async with sem:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        try:
+            out, err = await proc.communicate()
+        except asyncio.CancelledError:
+            proc.kill()
+            raise
+    if proc.returncode != 0 or not out:
+        raise RuntimeError(f"ffmpeg could not decode {path.name}: {err.decode(errors='replace').strip()}")
+    return out
+
+
+def build_track(pcms: list[bytes]) -> bytearray:
+    """Lay the numbers on one continuous track, number i starting exactly i*INTERVAL in.
+
+    A number that runs past the next beat is cut there; the last one plays out in full.
+    """
+    starts = [round(i * INTERVAL * PCM_RATE) * 2 for i in range(len(pcms) + 1)]
+    track = bytearray(starts[-2] + len(pcms[-1]))
+    for i, pcm in enumerate(pcms):
+        if i < len(pcms) - 1:
+            pcm = pcm[:starts[i + 1] - starts[i]]
+        track[starts[i]:starts[i] + len(pcm)] = pcm
+    return track
+
+
+class TrackSource(discord.AudioSource):
+    """Plays a prebuilt mono PCM track from memory: nothing to launch or decode mid-countdown."""
+
+    def __init__(self, track: bytearray):
+        self.track = track
+        self.pos = 0
+
+    def read(self) -> bytes:
+        frame = bytes(self.track[self.pos:self.pos + FRAME_BYTES])
+        if not frame:
+            return b""
+        self.pos += FRAME_BYTES
+        return audioop.tostereo(frame.ljust(FRAME_BYTES, b"\0"), 2, 1, 1)
 
 
 def check_dave_versions() -> None:
@@ -253,10 +322,12 @@ class LangBot:
         log.info("[%s] logged in as %s", self.name, self.client.user)
 
     def words(self, start: int, end: int) -> list[str]:
-        return [str(n) for n in range(start, end - 1, -1)]
+        return [spoken(n, self.lang) for n in range(start, end - 1, -1)]
 
-    async def prepare_clips(self, start: int, end: int) -> list[Path]:
-        return [await ensure_clip(w, self.lang) for w in self.words(start, end)]
+    async def prepare_track(self, start: int, end: int, sem: asyncio.Semaphore) -> bytearray:
+        """The whole countdown in this bot's language as one continuous track."""
+        clips = [await ensure_clip(w, self.lang) for w in self.words(start, end)]
+        return build_track(await asyncio.gather(*(decode_clip(c, sem) for c in clips)))
 
     async def connect(self, channel_id: int) -> discord.VoiceClient:
         """Join the channel using THIS bot's own view of the server."""
@@ -264,31 +335,32 @@ class LangBot:
         if not isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
             raise RuntimeError(f"{self.name} can't see voice channel {channel_id} - is it in the server with Connect permission?")
         vc = channel.guild.voice_client
+        if vc is not None and not vc.is_connected():      # stale (kicked / dropped): start fresh
+            await vc.disconnect(force=True)
+            vc = None
         if vc is None:
             return await channel.connect()
         if vc.channel != channel:
             await vc.move_to(channel)
         return vc
 
-    async def play_schedule(self, vc: discord.VoiceClient, clips: list[Path], t0: float) -> None:
-        """Start clip i exactly at t0 + i*INTERVAL (shared monotonic clock)."""
+    async def play_track(self, vc: discord.VoiceClient, track: bytearray, t0: float) -> None:
+        """Start the track at t0 (shared monotonic clock) and wait until it has played out."""
         loop = asyncio.get_running_loop()
         finished = asyncio.Event()
 
-        def after_last(err: Exception | None) -> None:
+        def after(err: Exception | None) -> None:
             if err:
                 log.error("[%s] playback error: %s", self.name, err)
             loop.call_soon_threadsafe(finished.set)
 
-        last = len(clips) - 1
         try:
-            for i, clip in enumerate(clips):
-                delay = (t0 + i * INTERVAL) - loop.time()
-                if delay > 0:
-                    await asyncio.sleep(delay)
-                if vc.is_playing():           # previous word ran long: cut it so we stay on the beat
-                    vc.stop()
-                vc.play(discord.FFmpegPCMAudio(str(clip)), after=after_last if i == last else None)
+            delay = t0 - loop.time()
+            if delay > 0:
+                await asyncio.sleep(delay)
+            if vc.is_playing():
+                vc.stop()
+            vc.play(TrackSource(track), after=after)
             await finished.wait()
         except asyncio.CancelledError:        # !stop: cut the current word immediately
             if vc.is_playing():
@@ -301,7 +373,7 @@ class Hub:
     def __init__(self, bots: list[LangBot]):
         self.bots = bots
         self.task: asyncio.Task | None = None            # the ONE countdown allowed at a time
-        self.stopping = False                            # stop requested, bots still leaving
+        self.stopping = False                            # stop requested, countdown task still winding down
         self.recent: list[tuple[int, int]] = self._load_recent()   # recently used countdowns, newest first
         self.panels: dict[int, discord.Message] = {}     # text channel id -> newest button panel
         self.panel_locks: dict[int, asyncio.Lock] = {}
@@ -372,7 +444,7 @@ class Hub:
     def stop(self) -> bool:
         if not self.busy():
             return False
-        if not self.stopping:        # cancel only once: a second cancel would interrupt the bots leaving
+        if not self.stopping:        # cancel only once
             self.stopping = True
             self.task.cancel()
         return True
@@ -467,36 +539,18 @@ class Hub:
                 pass
 
     async def run(self, channel_id: int, start: int, end: int) -> None:
-        try:
-            # 1. Generate/cache all clips for all languages (network work happens here, not during the count).
-            clip_lists = await asyncio.gather(*(b.prepare_clips(start, end) for b in self.bots))
-            # 2. Every bot joins the same channel; wait until ALL are connected.
-            vcs = await asyncio.gather(*(b.connect(channel_id) for b in self.bots))
-            # 3. One shared start instant on the process-wide monotonic clock.
-            t0 = asyncio.get_running_loop().time() + LEAD_IN
-            log.info("Countdown %d->%d starting in %.1fs with %d bots", start, end, LEAD_IN, len(self.bots))
-            await asyncio.gather(
-                *(b.play_schedule(vc, clips, t0) for b, vc, clips in zip(self.bots, vcs, clip_lists))
-            )
-        finally:
-            # Every bot must be fully out before this task ends, even on a stop: the next
-            # countdown may start right away and must not have its connection torn down by us.
-            leave = asyncio.ensure_future(self._leave(channel_id))
-            try:
-                await asyncio.shield(leave)
-            except asyncio.CancelledError:
-                await leave
-                raise
-
-    async def _leave(self, channel_id: int) -> None:
-        await asyncio.sleep(0.3)
-        vcs = []
-        for b in self.bots:
-            channel = b.client.get_channel(channel_id)
-            vc = channel.guild.voice_client if channel is not None else None
-            if vc is not None:
-                vcs.append(vc)
-        await asyncio.gather(*(vc.disconnect(force=True) for vc in vcs), return_exceptions=True)
+        # 1. Build each language's whole countdown as one track (TTS + decoding happen here, not during the count).
+        sem = asyncio.Semaphore(8)                       # ffmpeg decodes running at once
+        tracks = await asyncio.gather(*(b.prepare_track(start, end, sem) for b in self.bots))
+        # 2. Every bot joins the channel (or moves there, or is already in it); wait until ALL are connected.
+        vcs = await asyncio.gather(*(b.connect(channel_id) for b in self.bots))
+        # 3. One shared start instant on the process-wide monotonic clock.
+        t0 = asyncio.get_running_loop().time() + LEAD_IN
+        log.info("Countdown %d->%d starting in %.1fs with %d bots", start, end, LEAD_IN, len(self.bots))
+        await asyncio.gather(
+            *(b.play_track(vc, track, t0) for b, vc, track in zip(self.bots, vcs, tracks))
+        )
+        # The bots stay in the voice channel afterwards (finished or stopped), ready for the next countdown.
 
 
 # ---------------------------------------------------------------- main

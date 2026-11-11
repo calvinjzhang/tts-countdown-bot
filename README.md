@@ -74,8 +74,9 @@ type in any text channel:
 Only **one countdown runs at a time**. To start a different one, stop the
 current one first. A countdown can last at most 600 seconds (`max_seconds`).
 
-The bots leave when the countdown ends. Keep the terminal open; the bots only
-run while the script does.
+The bots stay in the voice channel after a countdown ends or is stopped, and
+move to the requester's channel if the next countdown is started elsewhere.
+Keep the terminal open; the bots only run while the script does.
 
 #### Buttons
 
@@ -109,6 +110,8 @@ mutes the English and Chinese bots and only hears Japanese.
 | `lead_in_seconds`      | pause after all bots connect before the first number      |
 | `max_seconds`          | longest countdown allowed, in seconds (default 600)       |
 | `trim_leading_silence` | cut silence from the start of each TTS clip (keeps languages aligned) |
+| `speech_rate`          | how fast each number is spoken (default `1.2` = 20% faster; `1` = normal). The gap between numbers is unchanged |
+| `zh_short_numbers`     | Chinese reads digits above 20: 44 → 四四 instead of 四十四 (default `true`) |
 | `opus_path`            | leave empty normally; full path to libopus if it isn't auto-found |
 | `bots[].tts_lang`      | Google TTS code: `en`, `zh` (Mandarin), `zh-TW`, `ja`, `ko`, `es`, … |
 
@@ -116,8 +119,10 @@ Add a fourth language by creating another bot account and adding an entry.
 
 ## How "same time" works (and its limits)
 
-- All bots run in one process on one monotonic clock. Each word is started at
-  `t0 + i × interval`, so the send times are identical to within a millisecond.
+- All bots run in one process on one monotonic clock. Before the count starts,
+  each bot's whole countdown is built as one continuous audio track with number
+  `i` placed exactly `i × interval` in, and all tracks start at the same instant.
+  Nothing is launched or decoded mid-countdown, so the gaps are exact.
 - Discord's voice servers then relay the audio to each listener, who hears it
   after their own network latency + jitter buffer - typically within
   ~50–150 ms of each other. No bot can remove that step.
